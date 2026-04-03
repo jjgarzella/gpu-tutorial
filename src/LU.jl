@@ -94,22 +94,6 @@ inferred from `A`.
 Returns the pivot row index as a CPU `Int`.
 """
 function findpivot!(A::AbstractMatrix, k::Int)
-    n = size(A, 1)
-    backend = get_backend(A)
-
-    # Allocate 1-element device arrays for the reduction result.
-    # Initialize pivot to k so that the stub (which leaves pivot unchanged)
-    # returns a valid row index instead of 0.
-    pivot     = similar(A, Int, 1)
-    copyto!(pivot, [k])
-    pivot_val = KernelAbstractions.zeros(backend, eltype(A), 1)
-
-    nrows = n - k + 1
-    kernel! = findpivot_kernel!(backend, DEFAULT_GROUPSIZE)
-    kernel!(A, k, pivot, pivot_val; ndrange=nrows)
-
-    # Transfer result to CPU.
-    return Int(Array(pivot)[1])
 end
 
 """
@@ -119,10 +103,6 @@ Swap rows `k` and `pivot_row` of matrix `A` in-place. Launches
 `swaprows_kernel!` on the backend inferred from `A`.
 """
 function swaprows!(A::AbstractMatrix, k::Int, pivot_row::Int)
-    n = size(A, 2)
-    backend = get_backend(A)
-    kernel! = swaprows_kernel!(backend, DEFAULT_GROUPSIZE)
-    kernel!(A, k, pivot_row; ndrange=n)
 end
 
 """
@@ -132,12 +112,6 @@ Divide column `k` of `A`, rows `k+1:n`, by `A[k,k]` in-place. Launches
 `normalize_kernel!` on the backend inferred from `A`.
 """
 function normalize!(A::AbstractMatrix, k::Int)
-    n = size(A, 1)
-    backend = get_backend(A)
-    nrows = n - k
-    nrows == 0 && return
-    kernel! = normalize_kernel!(backend, DEFAULT_GROUPSIZE)
-    kernel!(A, k; ndrange=nrows)
 end
 
 """
@@ -147,12 +121,6 @@ Perform the rank-1 update `A[k+1:n, k+1:n] -= A[k+1:n, k] * A[k, k+1:n]`
 in-place. Launches `updatesubmatrix_kernel!` on the backend inferred from `A`.
 """
 function updatesubmatrix!(A::AbstractMatrix, k::Int)
-    n = size(A, 1)
-    backend = get_backend(A)
-    m = n - k
-    m == 0 && return
-    kernel! = updatesubmatrix_kernel!(backend, DEFAULT_GROUPSIZE)
-    kernel!(A, k; ndrange=(m, m))
 end
 
 # =============================================================================
