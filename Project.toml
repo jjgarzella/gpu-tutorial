@@ -1,0 +1,23 @@
+name = "GPULUTutorial"
+uuid = "4cfc16d4-77fa-40e4-aa9f-c4cf019ac62e"
+authors = ["jjgarzella"]
+version = "0.1.0"
+
+[deps]
+KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+
+[compat]
+KernelAbstractions = "0.9"
+julia = "1.9"
+
+[extras]
+AMDGPU = "21141c5a-9bdb-4563-92ae-f87d6854732e"
+CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
+Metal = "dde4c033-4e86-420c-a63e-0dd931031962"
+Test = "8dfed614-e22c-358e-b078-01ca70719abb"
+TestEnv = "1e6cf692-eddd-4d53-88a5-2d735e33781b"
+oneAPI = "8f75cd03-7ff8-4ecb-9b8f-daf728133b1b"
+
+[targets]
+test = ["AMDGPU", "CUDA", "Metal", "Test", "TestEnv", "oneAPI"]
