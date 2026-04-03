@@ -26,10 +26,6 @@ TODO: Implement this kernel.
     and record its row index in `pivot[1]`.
 """
 @kernel function findpivot_kernel!(A, @Const(k), pivot, pivot_val)
-    i = @index(Global, Linear)
-    row = k + i - 1
-    # TODO: implement atomic max reduction to find pivot row
-    _ = abs(A[row, k])  # placeholder — suppress unused warning
 end
 
 """
@@ -44,9 +40,6 @@ TODO: Implement this kernel.
   - Write them back in swapped order.
 """
 @kernel function swaprows_kernel!(A, @Const(k), @Const(pivot_row))
-    j = @index(Global, Linear)
-    # TODO: swap A[k, j] and A[pivot_row, j]
-    _ = A[k, j]  # placeholder
 end
 
 """
@@ -62,10 +55,6 @@ TODO: Implement this kernel.
   - Compute `A[row, k] = A[row, k] / A[k, k]`.
 """
 @kernel function normalize_kernel!(A, @Const(k))
-    i = @index(Global, Linear)
-    row = k + i
-    # TODO: divide A[row, k] by A[k, k]
-    _ = A[row, k]  # placeholder
 end
 
 """
@@ -81,11 +70,6 @@ TODO: Implement this kernel.
   - Compute `A[row, col] -= A[row, k] * A[k, col]`.
 """
 @kernel function updatesubmatrix_kernel!(A, @Const(k))
-    i, j = @index(Global, NTuple)
-    row = k + i
-    col = k + j
-    # TODO: perform the rank-1 update at (row, col)
-    _ = A[row, col]  # placeholder
 end
 
 # =============================================================================
