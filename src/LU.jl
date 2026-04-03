@@ -27,7 +27,11 @@ Each thread is responsible for one row offset `i` (1-based), corresponding
 to actual row `k + i - 1`.
 """
 @kernel function findpivot_kernel!(A, @Const(k), pivot_val)
-    i = @index(Global, Linear)
+    gs       = @groupsize()[1]
+    i_global = @index(Global, Linear)
+    group_id = (i_global - 1) ÷ gs        # 0-indexed workgroup
+    local_id = (i_global - 1) % gs        # 0-indexed lane within workgroup
+    i        = group_id * gs + local_id + 1
     row = k + i - 1
     pivot_val[i] = abs(A[row, k])
 end
@@ -44,7 +48,11 @@ TODO: Implement this kernel.
   - Write them back in swapped order.
 """
 @kernel function swaprows_kernel!(A, @Const(k), @Const(pivot_row))
-    j = @index(Global, Linear)
+    gs       = @groupsize()[1]
+    j_global = @index(Global, Linear)
+    group_id = (j_global - 1) ÷ gs
+    local_id = (j_global - 1) % gs
+    j        = group_id * gs + local_id + 1
     tmp = A[k, j]
     A[k, j] = A[pivot_row, j]
     A[pivot_row, j] = tmp
@@ -63,7 +71,11 @@ TODO: Implement this kernel.
   - Compute `A[row, k] = A[row, k] / A[k, k]`.
 """
 @kernel function normalize_kernel!(A, @Const(k))
-    i = @index(Global, Linear)
+    gs       = @groupsize()[1]
+    i_global = @index(Global, Linear)
+    group_id = (i_global - 1) ÷ gs
+    local_id = (i_global - 1) % gs
+    i        = group_id * gs + local_id + 1
     row = k + i
     A[row, k] = _div(A[row, k], A[k, k])
 end
@@ -81,7 +93,14 @@ TODO: Implement this kernel.
   - Compute `A[row, col] -= A[row, k] * A[k, col]`.
 """
 @kernel function updatesubmatrix_kernel!(A, @Const(k))
-    i, j = @index(Global, NTuple)
+    gs               = @groupsize()
+    i_global, j_global = @index(Global, NTuple)
+    group_i  = (i_global - 1) ÷ gs[1]
+    group_j  = (j_global - 1) ÷ gs[2]
+    local_i  = (i_global - 1) % gs[1]
+    local_j  = (j_global - 1) % gs[2]
+    i        = group_i * gs[1] + local_i + 1
+    j        = group_j * gs[2] + local_j + 1
     row = k + i
     col = k + j
     A[row, col] = muladd(-A[row, k], A[k, col], A[row, col])
