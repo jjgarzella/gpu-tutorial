@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "server",
+  "dolt_database": "gpu_tutorial",
+  "project_id": "aa3dd2d4-69ab-45e6-9b58-bad0a80612a5"
+}
