@@ -6,17 +6,14 @@ using LinearAlgebra
 # =============================================================================
 # Backend detection
 #
-# We always include the CPU backend. GPU backends are loaded only when
-# the corresponding package is installed AND the hardware is functional.
+# GPU backends are loaded only when the corresponding package is installed
+# AND the hardware is functional.
 # Students: add whichever GPU package matches your hardware to this test
 # environment, e.g.:
 #   julia --project=test -e 'using Pkg; Pkg.add("CUDA")'
 # =============================================================================
 
 backends = Tuple{Any, Type, String}[]
-
-# CPU is always available
-push!(backends, (CPU(), Array, "CPU"))
 
 if !isnothing(Base.find_package("CUDA"))
     using CUDA
