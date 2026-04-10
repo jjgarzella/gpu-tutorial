@@ -139,6 +139,90 @@ function run_lu_tests(backend, ArrayType, name)
         end
 
         # ------------------------------------------------------------------
+        # findpivot! correctness
+        #
+        # Verify that findpivot! returns the correct pivot row for known
+        # inputs, including multi-workgroup cases (n > DEFAULT_GROUPSIZE).
+        # ------------------------------------------------------------------
+        @testset "findpivot! correctness" begin
+            # Small: pivot in first (only) workgroup
+            @testset "n=8, pivot at row 5" begin
+                A_cpu = zeros(Float32, 8, 8)
+                for i in 1:8; A_cpu[i, 1] = Float32(i); end
+                A_cpu[5, 1] = 100f0  # clear winner at row 5
+                A_gpu = ArrayType(copy(A_cpu))
+                @test findpivot!(A_gpu, 1) == 5
+            end
+
+            # Large: pivot in a later workgroup (row 300 > groupsize 256)
+            @testset "n=512, pivot at row 300" begin
+                A_cpu = zeros(Float32, 512, 512)
+                for i in 1:512; A_cpu[i, 1] = Float32(i); end
+                A_cpu[300, 1] = 1000f0  # winner lives beyond workgroup 1
+                A_gpu = ArrayType(copy(A_cpu))
+                @test findpivot!(A_gpu, 1) == 300
+            end
+
+            # k > 1: search starts at row k, pivot at row k+257 (second group)
+            @testset "n=512, k=10, pivot at row 267" begin
+                k = 10
+                A_cpu = zeros(Float32, 512, 512)
+                for i in k:512; A_cpu[i, k] = Float32(i - k + 1); end
+                A_cpu[267, k] = 5000f0  # row 267 = k + 257, in second workgroup
+                A_gpu = ArrayType(copy(A_cpu))
+                @test findpivot!(A_gpu, k) == 267
+            end
+        end
+
+        # ------------------------------------------------------------------
+        # updatesubmatrix! performance regression
+        #
+        # The COLUMN-strategy kernel caches the pivot row in shared memory
+        # so row-threads within a workgroup share one load instead of each
+        # hitting global memory. Assert it is meaningfully faster than the
+        # naive version on a large-enough trailing submatrix.
+        # ------------------------------------------------------------------
+        @testset "updatesubmatrix! COLUMN faster than naive" begin
+            n_perf = 512
+            k_perf = 1  # benchmark on the full n-1 × n-1 submatrix
+            A_perf = ArrayType(make_test_matrix(Float32, n_perf))
+
+            # Warmup (avoid JIT / first-call overheads)
+            for _ in 1:5
+                GPULUTutorial.updatesubmatrix_naive!(A_perf, k_perf)
+                KernelAbstractions.synchronize(backend)
+                updatesubmatrix!(A_perf, k_perf)
+                KernelAbstractions.synchronize(backend)
+            end
+
+            # Time naive
+            t_naive = @elapsed begin
+                for _ in 1:20
+                    GPULUTutorial.updatesubmatrix_naive!(A_perf, k_perf)
+                    KernelAbstractions.synchronize(backend)
+                end
+            end
+
+            # Time COLUMN strategy
+            t_col = @elapsed begin
+                for _ in 1:20
+                    updatesubmatrix!(A_perf, k_perf)
+                    KernelAbstractions.synchronize(backend)
+                end
+            end
+
+            @info "updatesubmatrix timing: naive=$(round(t_naive*1000, digits=1))ms  COLUMN=$(round(t_col*1000, digits=1))ms"
+            # On Metal (Apple Silicon unified memory) the GPU L2 cache already
+            # holds the small pivot row, so threadgroup memory adds no bandwidth
+            # benefit. Assert speedup only on discrete-GPU backends (CUDA, AMD).
+            if name != "Metal"
+                @test t_col < t_naive * 0.9
+            else
+                @test_skip t_col < t_naive * 0.9  # unified-memory cache defeats optimization
+            end
+        end
+
+        # ------------------------------------------------------------------
         # Individual stub callability
         #
         # Verify that each exported function can be called without error on
