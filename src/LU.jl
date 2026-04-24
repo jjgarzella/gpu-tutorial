@@ -17,36 +17,47 @@ using KernelAbstractions
 # =============================================================================
 
 """
-    findpivot_kernel!(A, k, nrows, pivot_val, pivot_idx)
+    findpivot_firstpass_kernel!(A, k, nrows, vals_out, idxs_out)
 
-Workgroup tree reduction to find the row with the maximum absolute value in
-column `k` of `A`, searching rows `k:k+nrows-1`.
+First pass of the Harris-pattern parallel argmax reduction over column `k` of
+`A`, searching rows `k:k+nrows-1`. Each workgroup consumes `2 *
+DEFAULT_GROUPSIZE` consecutive elements of the column and emits a single
+`(max_abs_val, row_index)` pair to `vals_out[gi]`, `idxs_out[gi]`.
 
-Each workgroup reduces its chunk of the column into a single `(max_val,
-row_index)` pair stored in shared memory, then writes that pair to
-`pivot_val[gi]` and `pivot_idx[gi]`. The host picks the global argmax from
-those `ngroups` values.
+Harris "first add during load": each thread pre-reduces two strided elements
+of the column before writing to shared memory, halving the number of shared-
+memory slots used by the tree reduction.
 
-Launch with `ndrange = ngroups * groupsize` (full workgroups) so that
-out-of-range threads can write a neutral value `0` rather than leaving
-shared-memory slots uninitialized.
+Launch with `ndrange = ngroups * DEFAULT_GROUPSIZE` where `ngroups = cld(nrows,
+2 * DEFAULT_GROUPSIZE)`. Out-of-range threads contribute a neutral `(0, 0)`.
 """
-@kernel function findpivot_kernel!(A, @Const(k), @Const(nrows), pivot_val, pivot_idx)
-    gi  = @index(Group, Linear)
-    li  = @index(Local, Linear)
-    i   = (gi - 1) * DEFAULT_GROUPSIZE + li
+@kernel function findpivot_firstpass_kernel!(A, @Const(k), @Const(nrows), vals_out, idxs_out)
+    gi = @index(Group, Linear)
+    li = @index(Local, Linear)
 
-    # Use the compile-time constant for @localmem size (Metal requires static dims).
     svals = @localmem eltype(A) (DEFAULT_GROUPSIZE,)
     sidxs = @localmem Int32 (DEFAULT_GROUPSIZE,)
 
-    if i <= nrows
-        row = k + i - 1
-        svals[li] = abs(A[row, k])
-        sidxs[li] = Int32(row)
+    base = (gi - 1) * 2 * DEFAULT_GROUPSIZE
+    i1   = base + li
+    i2   = base + li + DEFAULT_GROUPSIZE
+
+    v1 = eltype(A)(0); x1 = Int32(0)
+    v2 = eltype(A)(0); x2 = Int32(0)
+    if i1 <= nrows
+        row1 = k + i1 - 1
+        v1 = abs(A[row1, k])
+        x1 = Int32(row1)
+    end
+    if i2 <= nrows
+        row2 = k + i2 - 1
+        v2 = abs(A[row2, k])
+        x2 = Int32(row2)
+    end
+    if v2 > v1
+        svals[li] = v2; sidxs[li] = x2
     else
-        svals[li] = eltype(A)(0)
-        sidxs[li] = Int32(0)
+        svals[li] = v1; sidxs[li] = x1
     end
     @synchronize()
 
@@ -64,8 +75,60 @@ shared-memory slots uninitialized.
     if li <=   1; if svals[li+  1] > svals[li]; svals[li] = svals[li+  1]; sidxs[li] = sidxs[li+  1]; end; end; @synchronize()
 
     if li == 1
-        pivot_val[gi] = svals[1]
-        pivot_idx[gi] = sidxs[1]
+        vals_out[gi] = svals[1]
+        idxs_out[gi] = sidxs[1]
+    end
+end
+
+"""
+    findpivot_reduce_kernel!(vals_in, idxs_in, vals_out, idxs_out, len)
+
+Subsequent pass of the multi-pass argmax reduction. Reads `len` pre-reduced
+pairs from `(vals_in, idxs_in)` and emits `cld(len, 2*DEFAULT_GROUPSIZE)`
+further-reduced pairs into `(vals_out, idxs_out)`. Same Harris pre-reduce +
+unrolled tree reduction shape as the first pass; out-of-range threads
+contribute a neutral `(0, 0)`.
+"""
+@kernel function findpivot_reduce_kernel!(vals_in, idxs_in, vals_out, idxs_out, @Const(len))
+    gi = @index(Group, Linear)
+    li = @index(Local, Linear)
+
+    svals = @localmem eltype(vals_in) (DEFAULT_GROUPSIZE,)
+    sidxs = @localmem Int32 (DEFAULT_GROUPSIZE,)
+
+    base = (gi - 1) * 2 * DEFAULT_GROUPSIZE
+    p1   = base + li
+    p2   = base + li + DEFAULT_GROUPSIZE
+
+    v1 = eltype(vals_in)(0); x1 = Int32(0)
+    v2 = eltype(vals_in)(0); x2 = Int32(0)
+    if p1 <= len
+        v1 = vals_in[p1]
+        x1 = idxs_in[p1]
+    end
+    if p2 <= len
+        v2 = vals_in[p2]
+        x2 = idxs_in[p2]
+    end
+    if v2 > v1
+        svals[li] = v2; sidxs[li] = x2
+    else
+        svals[li] = v1; sidxs[li] = x1
+    end
+    @synchronize()
+
+    if li <= 128; if svals[li+128] > svals[li]; svals[li] = svals[li+128]; sidxs[li] = sidxs[li+128]; end; end; @synchronize()
+    if li <=  64; if svals[li+ 64] > svals[li]; svals[li] = svals[li+ 64]; sidxs[li] = sidxs[li+ 64]; end; end; @synchronize()
+    if li <=  32; if svals[li+ 32] > svals[li]; svals[li] = svals[li+ 32]; sidxs[li] = sidxs[li+ 32]; end; end; @synchronize()
+    if li <=  16; if svals[li+ 16] > svals[li]; svals[li] = svals[li+ 16]; sidxs[li] = sidxs[li+ 16]; end; end; @synchronize()
+    if li <=   8; if svals[li+  8] > svals[li]; svals[li] = svals[li+  8]; sidxs[li] = sidxs[li+  8]; end; end; @synchronize()
+    if li <=   4; if svals[li+  4] > svals[li]; svals[li] = svals[li+  4]; sidxs[li] = sidxs[li+  4]; end; end; @synchronize()
+    if li <=   2; if svals[li+  2] > svals[li]; svals[li] = svals[li+  2]; sidxs[li] = sidxs[li+  2]; end; end; @synchronize()
+    if li <=   1; if svals[li+  1] > svals[li]; svals[li] = svals[li+  1]; sidxs[li] = sidxs[li+  1]; end; end; @synchronize()
+
+    if li == 1
+        vals_out[gi] = svals[1]
+        idxs_out[gi] = sidxs[1]
     end
 end
 
@@ -175,33 +238,54 @@ const DEFAULT_GROUPSIZE = 256
 const GROUPSIZE_2D = (16, 16)
 
 """
-    findpivot!(A, k) -> Int
+    findpivot!(A, k; pivot_temp=nothing) -> Int
 
 Find the row index (1-based) of the maximum absolute value in column `k` of
-`A`, searching rows `k:n`. Launches `findpivot_kernel!` on the backend
-inferred from `A`.
+`A`, searching rows `k:n`. Uses a multi-pass Harris-pattern reduction that
+completes the argmax entirely on-device; only a single `Int32` is transferred
+to the host per call.
 
-Uses a workgroup-level tree reduction so only `ceil(nrows/groupsize)` values
-are transferred to the host instead of all `nrows` values.
+`pivot_temp` is a ping-pong scratch buffer `(; vals, idxs)` with each array
+sized `2 * cld(n, 2 * DEFAULT_GROUPSIZE)`. If omitted, it is allocated
+internally (convenient but adds an allocation per call; the `lu_decomp!`
+driver hoists this allocation out of the loop).
 
 Returns the pivot row index as a CPU `Int`.
 """
-function findpivot!(A::AbstractMatrix, k::Int)
+function findpivot!(A::AbstractMatrix, k::Int; pivot_temp=nothing)
     n = size(A, 1)
     backend = get_backend(A)
-
     nrows = n - k + 1
-    ngroups = cld(nrows, DEFAULT_GROUPSIZE)
-    pivot_val = KernelAbstractions.zeros(backend, eltype(A), ngroups)
-    pivot_idx = KernelAbstractions.zeros(backend, Int32, ngroups)
 
-    kernel! = findpivot_kernel!(backend, DEFAULT_GROUPSIZE)
-    # Full workgroups so out-of-range threads write neutral values.
-    kernel!(A, k, nrows, pivot_val, pivot_idx; ndrange=ngroups * DEFAULT_GROUPSIZE)
+    max_half = cld(n, 2 * DEFAULT_GROUPSIZE)
+    if pivot_temp === nothing
+        vals = KernelAbstractions.zeros(backend, eltype(A), 2 * max_half)
+        idxs = KernelAbstractions.zeros(backend, Int32,     2 * max_half)
+        pivot_temp = (; vals, idxs)
+    end
 
-    vals_cpu = Array(pivot_val)
-    idxs_cpu = Array(pivot_idx)
-    return Int(idxs_cpu[argmax(vals_cpu)])
+    vals_a = @view pivot_temp.vals[1:max_half]
+    vals_b = @view pivot_temp.vals[max_half+1:2*max_half]
+    idxs_a = @view pivot_temp.idxs[1:max_half]
+    idxs_b = @view pivot_temp.idxs[max_half+1:2*max_half]
+
+    # First pass: column of A -> `len` pair-buffer entries.
+    len = cld(nrows, 2 * DEFAULT_GROUPSIZE)
+    firstpass! = findpivot_firstpass_kernel!(backend, DEFAULT_GROUPSIZE)
+    firstpass!(A, k, nrows, vals_a, idxs_a; ndrange=len * DEFAULT_GROUPSIZE)
+
+    # Ping-pong reduce passes until a single pair remains.
+    front_v, front_i = vals_a, idxs_a
+    back_v,  back_i  = vals_b, idxs_b
+    reduce! = findpivot_reduce_kernel!(backend, DEFAULT_GROUPSIZE)
+    while len > 1
+        new_len = cld(len, 2 * DEFAULT_GROUPSIZE)
+        reduce!(front_v, front_i, back_v, back_i, len; ndrange=new_len * DEFAULT_GROUPSIZE)
+        front_v, front_i, back_v, back_i = back_v, back_i, front_v, front_i
+        len = new_len
+    end
+
+    return Int(Array(front_i[1:1])[1])
 end
 
 """

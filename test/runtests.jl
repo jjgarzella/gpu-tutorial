@@ -172,6 +172,17 @@ function run_lu_tests(backend, ArrayType, name)
                 A_gpu = ArrayType(copy(A_cpu))
                 @test findpivot!(A_gpu, k) == 267
             end
+
+            # Multi-pass: nrows > 2*DEFAULT_GROUPSIZE=512 forces a reduce pass.
+            # With n=1024 the first pass emits 2 pairs, requiring one reduce
+            # pass to collapse to a single pair on-device.
+            @testset "n=1024, pivot at row 900 (multi-pass)" begin
+                A_cpu = zeros(Float32, 1024, 1024)
+                for i in 1:1024; A_cpu[i, 1] = Float32(i); end
+                A_cpu[900, 1] = 1f5  # winner lives in the second first-pass group
+                A_gpu = ArrayType(copy(A_cpu))
+                @test findpivot!(A_gpu, 1) == 900
+            end
         end
 
         # ------------------------------------------------------------------
